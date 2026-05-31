@@ -146,6 +146,23 @@ var RE_KV=/^[^：:]{1,20}[：:].{1,40}$/;
 
 function cleanText(s){return s.replace(/》(、|，|,)《/g,'》《').replace(/\"(、|，|,)\"/g,'\"\"').trim();}
 
+// 预处理：清理 AI 导出杂符
+function preprocessText(text){
+  // 去行首bullet符号、Markdown标记
+  text=text.replace(/^[\\s​‌‍‎‏﻿]*[-–—•·●○▪▸►◆◇✓✔✗✘❖★☆→➤☐☑\\*#]+[\\s​‌‍‎‏﻿]*/,'');
+  // 去残留Markdown加粗/代码标记
+  text=text.replace(/\\*\\*|__/g,'').replace(/`{1,3}/g,'');
+  return text.trim();
+}
+
+function splitInlineItems(text){
+  // 拆分"1.xx。2.yy。"→["1.xx。","2.yy。"]
+  if(!/[。；]/.test(text))return[text];
+  var parts=text.split(/(?<=[。；])\\s*(?=\\d+[\\.．、])/);
+  parts=parts.filter(function(p){return p.trim();});
+  return parts.length>=2?parts.map(function(p){return p.trim();}):[text];
+}
+
 function detectLev(text,tlen,bold,prev,nextLen){
   if(RE_FIG.test(text)&&tlen<=50)return -1;
   if(RE_H5.test(text))return 5;
@@ -253,11 +270,21 @@ async function processFile(file){
   document.getElementById('toolbar').innerHTML='<span style=\"color:#bbb\">⏳ 处理中...</span>';
   try{
     var raw=await extractParagraphs(file);
-    if(raw.length===0){
+    // 预处理：去杂符、拆内联编号
+    var cleaned=[];
+    for(var ri=0;ri<raw.length;ri++){
+      var t=preprocessText(raw[ri].text);
+      if(!t)continue;
+      var parts=splitInlineItems(t);
+      for(var pi=0;pi<parts.length;pi++){
+        cleaned.push({text:parts[pi],len:parts[pi].length,bold:raw[ri].bold});
+      }
+    }
+    if(cleaned.length===0){
       document.getElementById('sourcePreview').innerHTML='<div class=\"err\"><strong>❌ 未提取到文字内容</strong><br><br>请确认：<br>① 文件包含文字段落（非纯图片）<br>② 文件为标准 .docx 格式<br>③ 文件未加密或设置权限密码</div>';
       updateToolbar();return;
     }
-    cur=analyze(raw);
+    cur=analyze(cleaned);
     renderSource(cur);
     renderPreview(cur);
     updateToolbar();
