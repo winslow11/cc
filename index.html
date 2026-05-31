@@ -16,7 +16,7 @@ body{font-family:"Microsoft YaHei","微软雅黑",sans-serif;background:#f0f2f5;
 .col-header{padding:12px 18px;font-size:13px;font-weight:600;border-bottom:1px solid #e8e8e8;background:#fafafa;display:flex;align-items:center;gap:8px}
 .dot{width:7px;height:7px;border-radius:50%}.dot-blue{background:#1890ff}.dot-green{background:#52c41a}
 .col-body{flex:1;overflow-y:auto;padding:16px;font-size:14px;line-height:1.8}
-.drop-zone{border:2px dashed #d9d9d9;border-radius:8px;padding:36px 18px;text-align:center;cursor:pointer;transition:all .3s;background:#fafafa}
+.drop-zone{border:2px dashed #d9d9d9;border-radius:8px;padding:36px 18px;text-align:center;cursor:pointer;transition:all .3s;background:#fafafa;margin:8px}
 .drop-zone:hover,.drop-zone.dragover{border-color:#1890ff;background:#e6f7ff}
 .drop-zone .icon{font-size:36px;margin-bottom:8px}
 .drop-zone .hint{font-size:12px;color:#999;margin-top:4px}
@@ -46,6 +46,7 @@ body{font-family:"Microsoft YaHei","微软雅黑",sans-serif;background:#f0f2f5;
 .pv-tbl .v{flex:1}
 .empty{text-align:center;color:#bbb;padding:50px 16px}
 .empty .icon{font-size:40px;margin-bottom:10px}
+.err{text-align:center;color:#e74c3c;padding:20px 16px;background:#fef2f2;border-radius:6px;margin:8px 0;font-size:13px}
 .toolbar{display:flex;gap:10px;align-items:center;padding:14px 18px;border-top:1px solid #e8e8e8;background:#fafafa;border-radius:0 0 10px 10px}
 .btn{padding:9px 20px;border:none;border-radius:5px;font-size:13px;cursor:pointer;font-weight:500;transition:all .2s}
 .btn-primary{background:#1890ff;color:#fff}.btn-primary:hover{background:#40a9ff}
@@ -72,18 +73,18 @@ body{font-family:"Microsoft YaHei","微软雅黑",sans-serif;background:#f0f2f5;
 
 <div class="col">
   <div class="col-header"><span class="dot dot-blue"></span>源文档 — 层级自动检测</div>
-  <div class="drop-zone" id="dropZone">
+  <div id="dropZone" class="drop-zone">
     <div class="icon">📁</div>
-    <div>点击或拖拽上传 <strong>.docx</strong> 文件</div>
-    <div class="hint">支持 Word 2007+ · 文件仅在本机处理 · 无需联网</div>
+    <div>点击此处或拖拽 <strong>.docx</strong> 文件上传</div>
+    <div class="hint">支持 Word 2007+ · 文件仅在本机处理 · 完全离线</div>
     <input type="file" id="fileInput" accept=".docx">
   </div>
-  <div class="col-body" id="sourcePreview"><div class="empty"><div class="icon">📂</div>上传后显示层级检测结果</div></div>
+  <div class="col-body" id="sourcePreview"><div class="empty"><div class="icon">📂</div>上传 .docx 文件后显示层级检测结果</div></div>
 </div>
 
 <div class="col">
   <div class="col-header"><span class="dot dot-green"></span>格式化预览 — 公文样式</div>
-  <div class="col-body" id="formatPreview"><div class="empty"><div class="icon">👁</div>上传后显示排版效果</div></div>
+  <div class="col-body" id="formatPreview"><div class="empty"><div class="icon">👁</div>上传文件后显示排版效果</div></div>
 </div>
 
 </div>
@@ -94,245 +95,138 @@ body{font-family:"Microsoft YaHei","微软雅黑",sans-serif;background:#f0f2f5;
 <div class="toast" id="toast"></div>
 
 <script>
-// ═══════════════════════════════════════════
-//  ZIP 读写（零依赖，浏览器原生 API）
-// ═══════════════════════════════════════════
+// ═══════════════════════════════════════
+//  ZIP 引擎（零依赖）
+// ═══════════════════════════════════════
+
+function showError(elId, msg) {
+  const el = document.getElementById(elId);
+  el.innerHTML = '<div class="err"><strong>❌ ' + msg + '</strong></div>';
+}
 
 async function unzipOne(file, entryPath) {
-  // 从 ZIP 中读取单个文件（支持 STORE 和 DEFLATE）
   const buf = await file.arrayBuffer();
   const dv = new DataView(buf);
-  const te = new TextEncoder();
 
-  // 查找 EOCD
+  // 找 EOCD
   let eocdOff = -1;
-  for (let i = dv.byteLength - 22; i >= 0; i--) {
+  const searchStart = Math.max(0, dv.byteLength - 65557); // EOCD + max comment
+  for (let i = dv.byteLength - 22; i >= searchStart; i--) {
     if (dv.getUint32(i, true) === 0x06054b50) { eocdOff = i; break; }
   }
-  if (eocdOff < 0) throw new Error('无效 ZIP 文件');
+  if (eocdOff < 0) throw new Error('无法解析 ZIP 格式，请确认是标准 .docx 文件');
 
   const totalEntries = dv.getUint16(eocdOff + 10, true);
   const cdOff = dv.getUint32(eocdOff + 16, true);
 
-  // 遍历中央目录找条目
   let pos = cdOff;
   for (let i = 0; i < totalEntries; i++) {
-    if (dv.getUint32(pos, true) !== 0x02014b50) throw new Error('中央目录损坏');
+    if (dv.getUint32(pos, true) !== 0x02014b50) throw new Error('ZIP 中央目录损坏');
     const compMethod = dv.getUint16(pos + 10, true);
-    const crc32 = dv.getUint32(pos + 16, true);
     const compSize = dv.getUint32(pos + 20, true);
-    const uncompSize = dv.getUint32(pos + 24, true);
     const fnLen = dv.getUint16(pos + 28, true);
     const extraLen = dv.getUint16(pos + 30, true);
     const commentLen = dv.getUint16(pos + 32, true);
     const localOff = dv.getUint32(pos + 42, true);
+
     const fnBytes = new Uint8Array(buf.slice(pos + 46, pos + 46 + fnLen));
     const fn = new TextDecoder().decode(fnBytes);
 
     if (fn === entryPath || fn.endsWith('/' + entryPath)) {
-      // 读 local header
       let lp = localOff;
       const lfnLen = dv.getUint16(lp + 26, true);
       const lExtraLen = dv.getUint16(lp + 28, true);
       const dataOff = lp + 30 + lfnLen + lExtraLen;
-      const raw = buf.slice(dataOff, dataOff + compSize);
+      const raw = new Uint8Array(buf.slice(dataOff, dataOff + compSize));
 
-      let decompressed;
       if (compMethod === 0) {
-        decompressed = raw;
+        return new TextDecoder().decode(raw);
       } else if (compMethod === 8) {
+        // DEFLATE — 用浏览器原生 API 解压
+        const blob = new Blob([raw]);
         const ds = new DecompressionStream('deflate');
-        const writer = ds.writable.getWriter();
-        const reader = ds.readable.getReader();
-        writer.write(raw);
-        writer.close();
-        const chunks = [];
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-        }
-        const total = chunks.reduce((a, c) => a + c.length, 0);
-        decompressed = new Uint8Array(total);
-        let off = 0;
-        for (const c of chunks) { decompressed.set(c, off); off += c.length; }
+        const decompressedStream = blob.stream().pipeThrough(ds);
+        const resultBuf = await new Response(decompressedStream).arrayBuffer();
+        return new TextDecoder().decode(resultBuf);
       } else {
         throw new Error('不支持的压缩方式: ' + compMethod);
       }
-      return new TextDecoder().decode(decompressed);
     }
     pos += 46 + fnLen + extraLen + commentLen;
   }
-  throw new Error('未找到: ' + entryPath);
-}
-
-function makeZip(files) {
-  // 创建 ZIP（STORE 方式，无压缩）
-  const te = new TextEncoder();
-  const parts = [];
-  const cdParts = [];
-  let cdOff = 0;
-
-  for (const [name, content] of Object.entries(files)) {
-    const data = te.encode(content);
-    const crc = crc32(data);
-
-    // Local header
-    const nameBytes = te.encode(name);
-    const lh = new ArrayBuffer(30 + nameBytes.length);
-    const lhDv = new DataView(lh);
-    lhDv.setUint32(0, 0x04034b50, true);
-    lhDv.setUint16(4, 20, true);   // version
-    lhDv.setUint16(6, 0, true);    // flags
-    lhDv.setUint16(8, 0, true);    // STORE
-    lhDv.setUint32(10, 0, true);   // mod time
-    lhDv.setUint32(14, crc, true);
-    lhDv.setUint32(18, data.length, true); // comp size
-    lhDv.setUint32(22, data.length, true); // uncomp size
-    lhDv.setUint16(26, nameBytes.length, true);
-    lhDv.setUint16(28, 0, true);   // extra len
-    const lhBytes = new Uint8Array(lh);
-    lhBytes.set(nameBytes, 30);
-    parts.push(lhBytes, data);
-    const entrySize = 30 + nameBytes.length + data.length;
-
-    // Central directory
-    const cd = new ArrayBuffer(46 + nameBytes.length);
-    const cdDv = new DataView(cd);
-    cdDv.setUint32(0, 0x02014b50, true);
-    cdDv.setUint16(4, 20, true);
-    cdDv.setUint16(6, 20, true);
-    cdDv.setUint16(8, 0, true);
-    cdDv.setUint16(10, 0, true);
-    cdDv.setUint32(12, 0, true);
-    cdDv.setUint32(16, crc, true);
-    cdDv.setUint32(20, data.length, true);
-    cdDv.setUint32(24, data.length, true);
-    cdDv.setUint16(28, nameBytes.length, true);
-    cdDv.setUint16(30, 0, true);
-    cdDv.setUint16(32, 0, true);
-    cdDv.setUint16(34, 0, true);
-    cdDv.setUint32(36, 0, true);
-    cdDv.setUint32(42, cdOff, true);
-    const cdBytes = new Uint8Array(cd);
-    cdBytes.set(nameBytes, 46);
-    cdParts.push(cdBytes);
-
-    cdOff += entrySize;
-  }
-
-  // EOCD
-  const cdBlob = new Blob(cdParts);
-  const cdArray = new Uint8Array(await cdBlob.arrayBuffer());
-  const eocd = new ArrayBuffer(22);
-  const eocdDv = new DataView(eocd);
-  const n = Object.keys(files).length;
-  eocdDv.setUint32(0, 0x06054b50, true);
-  eocdDv.setUint16(4, 0, true);
-  eocdDv.setUint16(6, 0, true);
-  eocdDv.setUint16(8, n, true);
-  eocdDv.setUint16(10, n, true);
-  eocdDv.setUint32(12, cdArray.length, true);
-  eocdDv.setUint32(16, cdOff, true);
-  eocdDv.setUint16(20, 0, true);
-
-  parts.push(cdArray);
-  parts.push(new Uint8Array(eocd));
-  return new Blob(parts, { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+  throw new Error('文档中未找到 ' + entryPath);
 }
 
 // CRC32
 function crc32(data) {
   let crc = 0xFFFFFFFF;
-  for (let i = 0; i < data.length; i++) {
-    crc ^= data[i];
-    for (let j = 0; j < 8; j++) {
-      crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0);
-    }
-  }
+  for (let i = 0; i < data.length; i++) { crc ^= data[i]; for (let j = 0; j < 8; j++) crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0); }
   return (crc ^ 0xFFFFFFFF) >>> 0;
 }
 
-// ═══════════════════════════════════════════
-//  docx XML 生成
-// ═══════════════════════════════════════════
+// 生成下载用的 ZIP
+function makeZip(files) {
+  const te = new TextEncoder();
+  const parts = [], cdParts = [];
+  let cdOff = 0;
 
-function escXml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
-}
+  for (const [name, content] of Object.entries(files)) {
+    const data = te.encode(content);
+    const nameBytes = te.encode(name);
+    const crc = crc32(data);
 
-function makeDocumentXml(merged) {
-  const FONT_H1 = '黑体', FONT_H2 = '楷体_GB2312', FONT_BODY = '仿宋_GB2312';
-  const SZ_BODY = '32', SZ_TABLE = '21'; // half-points
-  const LN = '560'; // 28pt in twips
-  const IND = '640'; // 2*16pt twips
+    // Local header
+    const lh = new ArrayBuffer(30 + nameBytes.length);
+    const lhDv = new DataView(lh);
+    lhDv.setUint32(0, 0x04034b50, true);
+    lhDv.setUint16(8, 0, true);  // STORE
+    lhDv.setUint32(14, crc, true);
+    lhDv.setUint32(18, data.length, true);
+    lhDv.setUint32(22, data.length, true);
+    lhDv.setUint16(26, nameBytes.length, true);
+    const lhArr = new Uint8Array(lh); lhArr.set(nameBytes, 30);
+    parts.push(lhArr, data);
 
-  let bodyXml = '';
-
-  for (const [lev, item] of merged) {
-    if (lev === 'table') {
-      bodyXml += '<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="pct"/><w:tblBorders><w:top w:val="single" w:sz="4"/><w:left w:val="single" w:sz="4"/><w:bottom w:val="single" w:sz="4"/><w:right w:val="single" w:sz="4"/><w:insideH w:val="single" w:sz="4"/><w:insideV w:val="single" w:sz="4"/></w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w="2500"/><w:gridCol w:w="2500"/></w:tblGrid>';
-      for (const [k, v] of item) {
-        bodyXml += '<w:tr><w:tc><w:tcPr><w:shd w:val="clear" w:fill="F2F2F2"/></w:tcPr><w:p><w:pPr><w:spacing w:line="360" w:lineRule="exact" w:before="0" w:after="0"/><w:jc w:val="right"/></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="' + FONT_BODY + '"/><w:sz w:val="' + SZ_TABLE + '"/><w:b/></w:rPr><w:t xml:space="preserve">' + escXml(k) + '</w:t></w:r></w:p></w:tc><w:tc><w:p><w:pPr><w:spacing w:line="360" w:lineRule="exact" w:before="0" w:after="0"/></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="' + FONT_BODY + '"/><w:sz w:val="' + SZ_TABLE + '"/></w:rPr><w:t xml:space="preserve">' + escXml(v) + '</w:t></w:r></w:p></w:tc></w:tr>';
-      }
-      bodyXml += '</w:tbl><w:p><w:pPr><w:spacing w:line="' + LN + '" w:lineRule="exact" w:before="0" w:after="0"/></w:pPr></w:p>';
-      continue;
-    }
-
-    let font = FONT_BODY, sz = SZ_BODY, bold = '', indent = ' w:firstLine="' + IND + '"';
-    switch (lev) {
-      case 1: font = FONT_H1; indent = ''; break;
-      case 2: font = FONT_H2; indent = ''; break;
-      case 3: bold = '<w:b/>'; indent = ''; break;
-      case 4: bold = '<w:b/>'; break;
-      case 5: break;
-      case -1: sz = SZ_TABLE; break;
-      default: break;
-    }
-    bodyXml += '<w:p><w:pPr><w:spacing w:line="' + LN + '" w:lineRule="exact" w:before="0" w:after="0"/>' +
-      (indent ? '<w:ind' + indent + '/>' : '') +
-      '</w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="' + font + '" w:ascii="' + font + '"/>' +
-      '<w:sz w:val="' + sz + '"/>' + bold + '</w:rPr><w:t xml:space="preserve">' + escXml(item) + '</w:t></w:r></w:p>';
+    // Central directory
+    const cd = new ArrayBuffer(46 + nameBytes.length);
+    const cdDv = new DataView(cd);
+    cdDv.setUint32(0, 0x02014b50, true);
+    cdDv.setUint32(16, crc, true);
+    cdDv.setUint32(20, data.length, true);
+    cdDv.setUint32(24, data.length, true);
+    cdDv.setUint16(28, nameBytes.length, true);
+    cdDv.setUint32(42, cdOff, true);
+    const cdArr = new Uint8Array(cd); cdArr.set(nameBytes, 46);
+    cdParts.push(cdArr);
+    cdOff += 30 + nameBytes.length + data.length;
   }
 
-  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-    '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"' +
-    ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
-    '<w:body>' + bodyXml +
-    '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>' +
-    '<w:pgMar w:top="2098" w:bottom="1984" w:left="1588" w:right="1474"/>' +
-    '</w:sectPr></w:body></w:document>';
-}
+  const cdBlob = new Blob(cdParts);
+  const cdArray = new Uint8Array(cdBlob.arrayBuffer ? cdBlob.arrayBuffer() : await cdBlob.arrayBuffer());
+  // Actually need to await this
+  return cdBlob.arrayBuffer().then(cdBuf => {
+    const cdArr2 = new Uint8Array(cdBuf);
+    const eocd = new ArrayBuffer(22);
+    const dv = new DataView(eocd);
+    dv.setUint32(0, 0x06054b50, true);
+    const n = Object.keys(files).length;
+    dv.setUint16(8, n, true); dv.setUint16(10, n, true);
+    dv.setUint32(12, cdArr2.length, true);
+    dv.setUint32(16, cdOff, true);
 
-function makeSettingsXml() {
-  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-    '<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
-    '<w:compat><w:overflowPunct w:val="false"/><w:topLinePunct w:val="false"/></w:compat></w:settings>';
-}
-
-function makeStylesXml() {
-  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-    '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
-    '<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:eastAsia="仿宋_GB2312" w:ascii="仿宋_GB2312"/>' +
-    '<w:sz w:val="32"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr>' +
-    '<w:spacing w:line="560" w:lineRule="exact" w:before="0" w:after="0"/>' +
-    '</w:pPr></w:pPrDefault></w:docDefaults></w:styles>';
-}
-
-function buildDocxZip(merged) {
-  return makeZip({
-    '[Content_Types].xml': '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>',
-    '_rels/.rels': '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
-    'word/_rels/document.xml.rels': '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>',
-    'word/document.xml': makeDocumentXml(merged),
-    'word/styles.xml': makeStylesXml(),
-    'word/settings.xml': makeSettingsXml(),
+    parts.push(cdArr2);
+    parts.push(new Uint8Array(eocd));
+    return new Blob(parts, { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
   });
 }
 
-// ═══════════════════════════════════════════
-//  读取 docx：解析 XML 提取段落
-// ═══════════════════════════════════════════
+// ═══════════════════════════════════════
+//  读取 docx 段落
+// ═══════════════════════════════════════
+
+function escXml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
 
 async function extractParagraphs(file) {
   const xml = await unzipOne(file, 'word/document.xml');
@@ -341,279 +235,231 @@ async function extractParagraphs(file) {
   const ns = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 
   const paras = [];
-  // 遍历所有 w:p (段落) 和 w:tbl (表格)
-  function walkBody(body) {
-    for (const child of body.children) {
+  function walk(node) {
+    for (const child of node.children) {
       const local = child.localName;
       if (local === 'p') {
         const texts = [];
         let hasBold = false;
-        // 收集 w:t 文本
         for (const t of child.getElementsByTagNameNS(ns, 't')) {
           if (t.textContent) texts.push(t.textContent);
         }
-        // 检查 w:b
-        if (child.getElementsByTagNameNS(ns, 'b').length > 0) hasBold = true;
+        if (child.getElementsByTagNameNS(ns, 'b').length > 0 || child.querySelector('[w\\:b]')) hasBold = true;
         const text = texts.join('').trim();
         if (text) {
-          // 检查是否为表格内的段落（通过祖先元素）
-          let isInTable = false;
-          let node = child.parentNode;
-          while (node && node !== body) {
-            if (node.localName === 'tc') { isInTable = true; break; }
-            node = node.parentNode;
+          let inTable = false, n = child.parentNode;
+          while (n && n !== node) {
+            if (n.localName === 'tc') { inTable = true; break; }
+            n = n.parentNode;
           }
-          if (!isInTable) {
-            paras.push({ text, len: text.length, bold: hasBold });
-          }
+          if (!inTable) paras.push({ text, len: text.length, bold: hasBold });
         }
       } else if (local === 'tbl') {
-        // 提取表格中的键值对
         const kvs = [];
         for (const tr of child.getElementsByTagNameNS(ns, 'tr')) {
           const cells = tr.getElementsByTagNameNS(ns, 'tc');
           if (cells.length >= 2) {
-            const k = cells[0].textContent?.trim() || '';
-            const v = cells[1].textContent?.trim() || '';
+            const k = (cells[0].textContent || '').trim();
+            const v = (cells[1].textContent || '').trim();
             if (k && v) kvs.push([k, v]);
           }
         }
-        if (kvs.length >= 2) {
-          paras.push({ text: JSON.stringify(kvs), len: 10, bold: false, _isTable: true, _kvs: kvs });
-        }
+        if (kvs.length >= 2) paras.push({ text: '', len: 0, bold: false, _isTable: true, _kvs: kvs });
+      } else {
+        walk(child);
       }
     }
   }
 
   const body = doc.getElementsByTagNameNS(ns, 'body')[0];
-  if (body) walkBody(body);
-
-  // 如果什么都没提取到，尝试从所有文本中按行分割
-  if (paras.length === 0) {
-    const allText = doc.documentElement.textContent || '';
-    const lines = allText.split(/\n+/).filter(l => l.trim());
-    for (const line of lines) {
-      paras.push({ text: line.trim(), len: line.trim().length, bold: false });
-    }
-  }
-
+  if (body) walk(body);
   return paras;
 }
 
-// ═══════════════════════════════════════════
-//  层级检测算法（与 formatter.py 一致）
-// ═══════════════════════════════════════════
+// ═══════════════════════════════════════
+//  层级检测
+// ═══════════════════════════════════════
 
-const RE_H1 = /^[一二三四五六七八九十]+[、．.]/;
-const RE_H2 = /^（[一二三四五六七八九十]+）/;
-const RE_H3 = /^\d+[\.．、]\s*\S/;
-const RE_H4 = /^（\d+）/;
-const RE_H5 = /^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]/;
-const RE_FIG = /^图\s*\d+/;
-const RE_DATE = /^\d{4}年\d{1,2}月\d{1,2}日/;
-const RE_KV = /^[^：:]{1,20}[：:].{1,40}$/;
+const RE_H1=/^[一二三四五六七八九十]+[、．.]/;
+const RE_H2=/^（[一二三四五六七八九十]+）/;
+const RE_H3=/^\d+[\.．、]\s*\S/;
+const RE_H4=/^（\d+）/;
+const RE_H5=/^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]/;
+const RE_FIG=/^图\s*\d+/;
+const RE_DATE=/^\d{4}年\d{1,2}月\d{1,2}日/;
+const RE_KV=/^[^：:]{1,20}[：:].{1,40}$/;
 
-function cleanText(text) {
-  text = text.replace(/》(、|，|,)《/g, '》《');
-  text = text.replace(/"(、|，|,)"/g, '""');
-  return text.trim();
+function cleanText(s) {
+  return s.replace(/》(、|，|,)《/g,'》《').replace(/"(、|，|,)"/g,'""').trim();
 }
 
-function detectLevel(text, tlen, hasBold, prevLevel, nextLen) {
-  if (RE_FIG.test(text) && tlen <= 50) return -1;
-  if (RE_KV.test(text) && tlen <= 50) return -2;
-  if (RE_H5.test(text)) return 5;
-  if (RE_H4.test(text)) return 4;
-  if (RE_H3.test(text) && tlen <= 30) return 3;
-  if (RE_H2.test(text)) return 2;
-  if (RE_H1.test(text)) return 1;
-  if (tlen <= 18 && nextLen && nextLen > 40) {
-    if (!RE_DATE.test(text) && !RE_FIG.test(text)) {
-      if (prevLevel && prevLevel >= 1) return Math.min(prevLevel + 1, 5);
-      return 2;
-    }
-  }
-  if (tlen <= 20 && hasBold) return 2;
-  if (tlen > 18 && tlen <= 35 && nextLen && nextLen > 60) {
-    if (!RE_DATE.test(text) && !RE_KV.test(text)) return 2;
-  }
+function detectLev(text, tlen, bold, prev, nextLen) {
+  if(RE_FIG.test(text)&&tlen<=50)return -1;
+  if(RE_KV.test(text)&&tlen<=50)return -2;
+  if(RE_H5.test(text))return 5;
+  if(RE_H4.test(text))return 4;
+  if(RE_H3.test(text)&&tlen<=30)return 3;
+  if(RE_H2.test(text))return 2;
+  if(RE_H1.test(text))return 1;
+  if(tlen<=18&&nextLen&&nextLen>40){if(!RE_DATE.test(text)&&!RE_FIG.test(text)){if(prev&&prev>=1)return Math.min(prev+1,5);return 2;}}
+  if(tlen<=20&&bold)return 2;
+  if(tlen>18&&tlen<=35&&nextLen&&nextLen>60){if(!RE_DATE.test(text)&&!RE_KV.test(text))return 2;}
   return 0;
 }
 
-function collectKeyValues(paras, startIdx) {
-  const kvs = [];
-  let i = startIdx;
-  while (i < paras.length) {
-    const m = paras[i].text.match(RE_KV);
-    if (m && paras[i].len <= 50) {
-      const idx = paras[i].text.search(/[：:]/);
-      if (idx > 0) { kvs.push([paras[i].text.slice(0, idx).trim(), paras[i].text.slice(idx + 1).trim()]); i++; continue; }
-    }
-    break;
-  }
-  return { kvs, endIdx: i };
+function collectKV(paras,start){
+  const kvs=[];let i=start;
+  while(i<paras.length){const m=paras[i].text.match(RE_KV);if(m&&paras[i].len<=50){const idx=paras[i].text.search(/[：:]/);if(idx>0){kvs.push([paras[i].text.slice(0,idx).trim(),paras[i].text.slice(idx+1).trim()]);i++;continue;}}break;}
+  return{kvs,endIdx:i};
 }
 
-function analyzeParagraphs(rawParas) {
-  const levels = [];
-  for (let i = 0; i < rawParas.length; i++) {
-    const p = rawParas[i];
-    if (p._isTable) {
-      levels.push(['table', p._kvs]);
-      continue;
-    }
-    const nextLen = i + 1 < rawParas.length ? rawParas[i + 1].len : null;
-    const prevLev = levels.length > 0 ? levels[levels.length - 1][0] : null;
-    const lev = detectLevel(p.text, p.len, p.bold, prevLev, nextLen);
-    levels.push([lev, cleanText(p.text)]);
+function analyze(paras){
+  const levels=[];
+  for(let i=0;i<paras.length;i++){
+    const p=paras[i];
+    if(p._isTable){levels.push(['table',p._kvs]);continue;}
+    const nextLen=i+1<paras.length?paras[i+1].len:null;
+    const prev=levels.length>0?levels[levels.length-1][0]:null;
+    levels.push([detectLev(p.text,p.len,p.bold,prev,nextLen),cleanText(p.text)]);
   }
-
-  const merged = [];
-  let i = 0;
-  while (i < levels.length) {
-    const [lev, text] = levels[i];
-    if (lev === -2) {
-      const { kvs, endIdx } = collectKeyValues(rawParas, i);
-      if (kvs.length >= 2) { merged.push(['table', kvs]); i = endIdx; continue; }
-    }
-    merged.push([lev, text]);
-    i++;
-  }
+  const merged=[];let i=0;
+  while(i<levels.length){const[l,t]=levels[i];if(l===-2){const{kvs,endIdx}=collectKV(paras,i);if(kvs.length>=2){merged.push(['table',kvs]);i=endIdx;continue;}}merged.push([l,t]);i++;}
   return merged;
 }
 
-// ═══════════════════════════════════════════
+// ═══════════════════════════════════════
+//  docx 生成
+// ═══════════════════════════════════════
+
+function makeDocumentXml(merged){
+  const FH='黑体',FK='楷体_GB2312',FB='仿宋_GB2312',SZ='32',ST='21',LN='560',IND='640';
+  let body='';
+  for(const[lv,item] of merged){
+    if(lv==='table'){
+      body+='<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="pct"/><w:tblBorders><w:top w:val="single" w:sz="4"/><w:left w:val="single" w:sz="4"/><w:bottom w:val="single" w:sz="4"/><w:right w:val="single" w:sz="4"/><w:insideH w:val="single" w:sz="4"/><w:insideV w:val="single" w:sz="4"/></w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w="2500"/><w:gridCol w:w="2500"/></w:tblGrid>';
+      for(const[k,v] of item){
+        body+='<w:tr><w:tc><w:tcPr><w:shd w:val="clear" w:fill="F2F2F2"/></w:tcPr><w:p><w:pPr><w:spacing w:line="360" w:lineRule="exact" w:before="0" w:after="0"/><w:jc w:val="right"/></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="'+FB+'"/><w:sz w:val="'+ST+'"/><w:b/></w:rPr><w:t xml:space="preserve">'+escXml(k)+'</w:t></w:r></w:p></w:tc><w:tc><w:p><w:pPr><w:spacing w:line="360" w:lineRule="exact" w:before="0" w:after="0"/></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="'+FB+'"/><w:sz w:val="'+ST+'"/></w:rPr><w:t xml:space="preserve">'+escXml(v)+'</w:t></w:r></w:p></w:tc></w:tr>';
+      }
+      body+='</w:tbl><w:p><w:pPr><w:spacing w:line="'+LN+'" w:lineRule="exact" w:before="0" w:after="0"/></w:pPr></w:p>';
+      continue;
+    }
+    let fnt=FB,sz=SZ,bld='',ind=' w:firstLine="'+IND+'"';
+    switch(lv){case 1:fnt=FH;ind='';break;case 2:fnt=FK;ind='';break;case 3:bld='<w:b/>';ind='';break;case 4:bld='<w:b/>';break;case 5:break;case -1:sz=ST;break;}
+    body+='<w:p><w:pPr><w:spacing w:line="'+LN+'" w:lineRule="exact" w:before="0" w:after="0"/>'+(ind?'<w:ind'+ind+'/>':'')+'</w:pPr><w:r><w:rPr><w:rFonts w:eastAsia="'+fnt+'" w:ascii="'+fnt+'"/><w:sz w:val="'+sz+'"/>'+bld+'</w:rPr><w:t xml:space="preserve">'+escXml(item)+'</w:t></w:r></w:p>';
+  }
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>'+body+'<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="2098" w:bottom="1984" w:left="1588" w:right="1474"/></w:sectPr></w:body></w:document>';
+}
+
+async function buildDocxBlob(merged){
+  return makeZip({
+    '[Content_Types].xml':'<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/></Types>',
+    '_rels/.rels':'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+    'word/_rels/document.xml.rels':'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/></Relationships>',
+    'word/document.xml':makeDocumentXml(merged),
+    'word/styles.xml':'<?xml version="1.0" encoding="UTF-8"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:eastAsia="仿宋_GB2312" w:ascii="仿宋_GB2312"/><w:sz w:val="32"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:line="560" w:lineRule="exact" w:before="0" w:after="0"/></w:pPr></w:pPrDefault></w:docDefaults></w:styles>',
+    'word/settings.xml':'<?xml version="1.0" encoding="UTF-8"?><w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:compat><w:overflowPunct w:val="false"/><w:topLinePunct w:val="false"/></w:compat></w:settings>',
+  });
+}
+
+// ═══════════════════════════════════════
 //  UI
-// ═══════════════════════════════════════════
+// ═══════════════════════════════════════
 
-const LV = { 1: '一级', 2: '二级', 3: '三级', 4: '四级', 5: '五级', 0: '正文', '-1': '图注', 'table': '表格' };
-const TC = { 1: 'tag-h1', 2: 'tag-h2', 3: 'tag-h3', 4: 'tag-h4', 5: 'tag-h5', 0: 'tag-body', '-1': 'tag-fig', 'table': 'tag-tbl' };
-const BC = { 1: 'b-h1', 2: 'b-h2', 3: 'b-h3', 4: 'b-h4', 5: 'b-h5', '-1': 'b-fig', 'table': 'b-tbl' };
-const PV = { 1: 'pv-h1', 2: 'pv-h2', 3: 'pv-h3', 4: 'pv-h4', 5: 'pv-h5', '-1': 'pv-fig' };
+const LV={1:'一级',2:'二级',3:'三级',4:'四级',5:'五级',0:'正文','-1':'图注','table':'表格'};
+const TC={1:'tag-h1',2:'tag-h2',3:'tag-h3',4:'tag-h4',5:'tag-h5',0:'tag-body','-1':'tag-fig','table':'tag-tbl'};
+const BC={1:'b-h1',2:'b-h2',3:'b-h3',4:'b-h4',5:'b-h5','-1':'b-fig','table':'b-tbl'};
+const PV={1:'pv-h1',2:'pv-h2',3:'pv-h3',4:'pv-h4',5:'pv-h5','-1':'pv-fig'};
 
-function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),3000);}
 
-function renderSource(merged) {
-  const el = document.getElementById('sourcePreview');
-  el.innerHTML = '';
-  for (const [lev, item] of merged) {
-    const div = document.createElement('div');
-    div.className = 'para-item ' + (BC[lev] || '');
-    const tag = document.createElement('span');
-    tag.className = 'tag ' + (TC[lev] || 'tag-body');
-    tag.textContent = LV[lev] || '正文';
-    div.appendChild(tag);
-    if (lev === 'table') {
-      for (const [k, v] of item) {
-        div.appendChild(document.createTextNode(k + '：' + v + '  '));
-      }
-    } else {
-      div.appendChild(document.createTextNode(item));
-    }
-    el.appendChild(div);
+let cur=null, fname='document';
+
+function renderSource(merged){
+  const el=document.getElementById('sourcePreview');el.innerHTML='';
+  for(const[l,item] of merged){
+    const d=document.createElement('div');d.className='para-item '+(BC[l]||'');
+    const tag=document.createElement('span');tag.className='tag '+(TC[l]||'tag-body');tag.textContent=LV[l]||'正文';d.appendChild(tag);
+    if(l==='table'){for(const[k,v] of item)d.appendChild(document.createTextNode(k+'：'+v+'  '));}
+    else d.appendChild(document.createTextNode(item));
+    el.appendChild(d);
   }
 }
 
-function renderPreview(merged) {
-  const el = document.getElementById('formatPreview');
-  el.innerHTML = '';
-  for (const [lev, item] of merged) {
-    if (lev === 'table') {
-      const d = document.createElement('div'); d.className = 'pv-tbl';
-      for (const [k, v] of item) {
-        const r = document.createElement('div'); r.className = 'r';
-        const ks = document.createElement('span'); ks.className = 'k'; ks.textContent = k;
-        const vs = document.createElement('span'); vs.className = 'v'; vs.textContent = v;
-        r.appendChild(ks); r.appendChild(vs); d.appendChild(r);
-      }
+function renderPreview(merged){
+  const el=document.getElementById('formatPreview');el.innerHTML='';
+  for(const[l,item] of merged){
+    if(l==='table'){
+      const d=document.createElement('div');d.className='pv-tbl';
+      for(const[k,v] of item){const r=document.createElement('div');r.className='r';const ks=document.createElement('span');ks.className='k';ks.textContent=k;const vs=document.createElement('span');vs.className='v';vs.textContent=v;r.appendChild(ks);r.appendChild(vs);d.appendChild(r);}
       el.appendChild(d);
-    } else {
-      const d = document.createElement('div');
-      d.className = PV[lev] || 'pv-body';
-      d.textContent = item;
-      el.appendChild(d);
-    }
+    }else{const d=document.createElement('div');d.className=PV[l]||'pv-body';d.textContent=item;el.appendChild(d);}
   }
 }
 
-function showToast(msg) {
-  const t = document.getElementById('toast');
-  t.textContent = msg; t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 2500);
+function updateToolbar(){
+  const tb=document.getElementById('toolbar');
+  if(!cur){tb.innerHTML='<span style="color:#bbb">等待上传文件...</span>';return;}
+  const cnt={};for(const[l] of cur){const k=LV[l]||'?';cnt[k]=(cnt[k]||0)+1;}
+  const s=Object.entries(cnt).map(([k,v])=>k+'×'+v).join(' · ');
+  tb.innerHTML='<button class="btn btn-outline" onclick="resetAll()">🔄 重新上传</button><button class="btn btn-success" id="btnDownload" onclick="doDownload()">⬇ 导出格式化文档</button><span class="stats">检测：'+s+'　|　共 '+cur.length+' 个内容块</span>';
 }
 
-let currentMerged = null, currentFileName = 'document';
-
-function updateToolbar() {
-  const tb = document.getElementById('toolbar');
-  if (!currentMerged) {
-    tb.innerHTML = '<span style="color:#bbb">等待上传文件...</span>'; return;
-  }
-  const cnt = {};
-  for (const [lev] of currentMerged) { const k = LV[lev] || '?'; cnt[k] = (cnt[k] || 0) + 1; }
-  const s = Object.entries(cnt).map(([k, v]) => k + '×' + v).join(' · ');
-  tb.innerHTML = '<button class="btn btn-outline" onclick="resetAll()">🔄 重新上传</button>' +
-    '<button class="btn btn-success" id="btnDownload" onclick="doDownload()">⬇ 导出格式化文档</button>' +
-    '<span class="stats">检测：' + s + '　|　共 ' + currentMerged.length + ' 个内容块</span>';
-}
-
-async function processFile(file) {
-  if (!file.name.toLowerCase().endsWith('.docx')) { showToast('⚠ 仅支持 .docx 格式'); return; }
-  currentFileName = file.name.replace(/\.docx$/i, '');
-  try {
-    document.getElementById('sourcePreview').innerHTML = '<div class="empty"><div class="icon">⏳</div>分析中...</div>';
-    document.getElementById('formatPreview').innerHTML = '<div class="empty"><div class="icon">⏳</div>渲染中...</div>';
-    const rawParas = await extractParagraphs(file);
-    if (rawParas.length === 0) { showToast('⚠ 未提取到文本内容'); return; }
-    currentMerged = analyzeParagraphs(rawParas);
-    renderSource(currentMerged);
-    renderPreview(currentMerged);
+async function processFile(file){
+  if(!file.name.toLowerCase().endsWith('.docx')){showToast('⚠ 仅支持 .docx 格式，请上传 Word 文档');return;}
+  fname=file.name.replace(/\.docx$/i,'');
+  document.getElementById('sourcePreview').innerHTML='<div class="empty"><div class="icon">⏳</div>正在解析文档结构...</div>';
+  document.getElementById('formatPreview').innerHTML='<div class="empty"><div class="icon">⏳</div>等待解析完成...</div>';
+  document.getElementById('toolbar').innerHTML='<span style="color:#bbb">⏳ 处理中...</span>';
+  try{
+    const raw=await extractParagraphs(file);
+    if(raw.length===0){showError('sourcePreview','未能从文件中提取到文字内容，请确认文件包含文本段落');showError('formatPreview','无法生成预览');updateToolbar();return;}
+    cur=analyze(raw);
+    renderSource(cur);
+    renderPreview(cur);
     updateToolbar();
-    showToast('✅ 检测完成：' + rawParas.length + ' 段 → ' + currentMerged.length + ' 块');
-  } catch (e) {
+    showToast('✅ 完成！检测到 '+raw.length+' 个段落 → '+cur.length+' 个内容块');
+  }catch(e){
     console.error(e);
-    showToast('❌ 处理失败：' + e.message);
+    showError('sourcePreview','解析失败：'+e.message+'<br><br>请确认：<br>① 文件为 .docx 格式（Word 2007+）<br>② 文件未损坏<br>③ 文件未被加密或设置权限密码');
+    showError('formatPreview','解析失败');
+    updateToolbar();
   }
 }
 
-async function doDownload() {
-  if (!currentMerged) return;
-  const btn = document.getElementById('btnDownload');
-  btn.disabled = true; btn.textContent = '⏳ 生成中...';
-  try {
-    const blob = await buildDocxZip(currentMerged);
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = currentFileName + '_格式化.docx';
-    document.body.appendChild(a); a.click();
-    document.body.removeChild(a); URL.revokeObjectURL(url);
-    showToast('✅ 下载完成！请在 Word 中打开检查');
-  } catch (e) {
-    console.error(e);
-    showToast('❌ 生成失败：' + e.message);
-  } finally {
-    btn.disabled = false; btn.textContent = '⬇ 导出格式化文档';
-  }
+async function doDownload(){
+  if(!cur)return;
+  const btn=document.getElementById('btnDownload');btn.disabled=true;btn.textContent='⏳ 生成中...';
+  try{
+    const blob=await buildDocxBlob(cur);
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download=fname+'_格式化.docx';document.body.appendChild(a);a.click();
+    document.body.removeChild(a);URL.revokeObjectURL(url);
+    showToast('✅ 下载完成！请在 Word 中打开检查格式');
+  }catch(e){console.error(e);showToast('❌ 生成失败：'+e.message);}
+  finally{btn.disabled=false;btn.textContent='⬇ 导出格式化文档';}
 }
 
-function resetAll() {
-  currentMerged = null; currentFileName = 'document';
-  document.getElementById('sourcePreview').innerHTML = '<div class="empty"><div class="icon">📂</div>上传后显示层级检测结果</div>';
-  document.getElementById('formatPreview').innerHTML = '<div class="empty"><div class="icon">👁</div>上传后显示排版效果</div>';
+function resetAll(){
+  cur=null;fname='document';
+  document.getElementById('sourcePreview').innerHTML='<div class="empty"><div class="icon">📂</div>上传 .docx 文件后显示层级检测结果</div>';
+  document.getElementById('formatPreview').innerHTML='<div class="empty"><div class="icon">👁</div>上传文件后显示排版效果</div>';
+  updateToolbar();document.getElementById('fileInput').value='';
+}
+
+// ── 事件绑定 ──
+(function(){
+  const dz=document.getElementById('dropZone');
+  const fi=document.getElementById('fileInput');
+  dz.addEventListener('click',function(e){e.stopPropagation();fi.click();});
+  dz.addEventListener('dragover',function(e){e.preventDefault();e.stopPropagation();dz.classList.add('dragover');});
+  dz.addEventListener('dragleave',function(e){e.preventDefault();e.stopPropagation();dz.classList.remove('dragover');});
+  dz.addEventListener('drop',function(e){e.preventDefault();e.stopPropagation();dz.classList.remove('dragover');const f=e.dataTransfer.files[0];if(f)processFile(f);});
+  fi.addEventListener('change',function(){if(fi.files&&fi.files[0])processFile(fi.files[0]);});
+  document.addEventListener('paste',function(e){const f=e.clipboardData&&e.clipboardData.files[0];if(f&&f.name.toLowerCase().endsWith('.docx')){e.preventDefault();processFile(f);}});
   updateToolbar();
-  document.getElementById('fileInput').value = '';
-}
-
-// ── 事件 ──
-const dz = document.getElementById('dropZone');
-const fi = document.getElementById('fileInput');
-dz.addEventListener('click', () => fi.click());
-dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('dragover'); });
-dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
-dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('dragover'); if (e.dataTransfer.files[0]) processFile(e.dataTransfer.files[0]); });
-fi.addEventListener('change', () => { if (fi.files[0]) processFile(fi.files[0]); });
-document.addEventListener('paste', e => { const f = e.clipboardData?.files?.[0]; if (f && f.name.endsWith('.docx')) { e.preventDefault(); processFile(f); } });
-updateToolbar();
+  console.log('公文格式自动排版工具已就绪');
+  console.log('使用方法：拖入 .docx 文件或点击上传区域');
+})();
 </script>
 </body>
 </html>
