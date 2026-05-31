@@ -91,121 +91,152 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
 function escXml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
-async function extractParagraphs(file){
+// ════════════════ 提取：段落到块（支持原生表格） ════════════════
+async function extractContent(file){
   var zip=await JSZip.loadAsync(file);
   var xmlFile=zip.file('word/document.xml');
-  if(!xmlFile) throw new Error('文档中未找到 word/document.xml，请确认是标准 .docx 文件');
+  if(!xmlFile) throw new Error('文档中未找到 word/document.xml');
   var xml=await xmlFile.async('string');
   var parser=new DOMParser();
   var doc=parser.parseFromString(xml,'text/xml');
   var ns='http://schemas.openxmlformats.org/wordprocessingml/2006/main';
-  var paras=[];
-  function walk(node){
-    for(var ci=0;ci<node.children.length;ci++){var child=node.children[ci];
-      var local=child.localName;
-      if(local==='p'){
-        var texts=[],hasBold=false;
-        var tEls=child.getElementsByTagNameNS(ns,'t');
-        for(var ti=0;ti<tEls.length;ti++){if(tEls[ti].textContent)texts.push(tEls[ti].textContent);}
-        if(child.getElementsByTagNameNS(ns,'b').length>0)hasBold=true;
-        var text=texts.join('').trim();
-        if(text){
-          var inTable=false,n=child.parentNode;
-          while(n&&n!==node){if(n.localName==='tc'){inTable=true;break;}n=n.parentNode;}
-          if(!inTable)paras.push({text:text,len:text.length,bold:hasBold});
-        }
-      }else if(local==='tbl'){
-        var kvs=[];
-        var trEls=child.getElementsByTagNameNS(ns,'tr');
-        for(var ri=0;ri<trEls.length;ri++){var cells=trEls[ri].getElementsByTagNameNS(ns,'tc');
-          if(cells.length>=2){var k=(cells[0].textContent||'').trim();var v=(cells[1].textContent||'').trim();if(k&&v)kvs.push([k,v]);}
-        }
-        if(kvs.length>=2)paras.push({text:'',len:0,bold:false,_isTable:true,_kvs:kvs});
-      }else{walk(child);}
+  var blocks=[];
+  var body=doc.getElementsByTagNameNS(ns,'body')[0];
+  if(!body) return blocks;
+  for(var ci=0;ci<body.children.length;ci++){
+    var child=body.children[ci];
+    var local=child.localName;
+    if(local==='p'){
+      var texts=[],hasBold=false;
+      var tEls=child.getElementsByTagNameNS(ns,'t');
+      for(var ti=0;ti<tEls.length;ti++){if(tEls[ti].textContent)texts.push(tEls[ti].textContent);}
+      if(child.getElementsByTagNameNS(ns,'b').length>0)hasBold=true;
+      var text=texts.join('').trim();
+      if(text)blocks.push({type:'p',text:text,len:text.length,bold:hasBold});
+    }else if(local==='tbl'){
+      var rows=[];
+      var trEls=child.getElementsByTagNameNS(ns,'tr');
+      for(var ri=0;ri<trEls.length;ri++){
+        var cells=[];
+        var tcEls=trEls[ri].getElementsByTagNameNS(ns,'tc');
+        for(var ti=0;ti<tcEls.length;ti++){cells.push((tcEls[ti].textContent||'').trim());}
+        rows.push(cells);
+      }
+      if(rows.length>0)blocks.push({type:'tbl',rows:rows});
     }
   }
-  var body=doc.getElementsByTagNameNS(ns,'body')[0];
-  if(body)walk(body);
-  // fallback: 如果没提取到，尝试纯文本分割
-  if(paras.length===0){
+  // fallback
+  if(blocks.length===0){
     var allText=(doc.documentElement.textContent||'').trim();
-    if(allText){var lines=allText.split(/\\n+/);for(var li=0;li<lines.length;li++){var l=lines[li].trim();if(l)paras.push({text:l,len:l.length,bold:false});}}
+    if(allText){var lines=allText.split(/\n+/);for(var li=0;li<lines.length;li++){var l=lines[li].trim();if(l)blocks.push({type:'p',text:l,len:l.length,bold:false});}}
   }
-  return paras;
+  return blocks;
 }
 
-// 层级检测
+// 正则
 var RE_H1=/^[一二三四五六七八九十]+[、．.]/;
 var RE_H2=/^（[一二三四五六七八九十]+）/;
-var RE_H3=/^\\d+[\\.．、]\\s*\\S/;
-var RE_H4=/^（\\d+）/;
+var RE_H3=/^\d+[\.．、]\s*\S/;
+var RE_H4=/^（\d+）/;
 var RE_H5=/^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]/;
-var RE_FIG=/^图\\s*\\d+/;
-var RE_DATE=/^\\d{4}年\\d{1,2}月\\d{1,2}日/;
-var RE_KV=/^[^：:]{1,20}[：:].{1,40}$/;
+var RE_FIG=/^图\s*\d+/;
+var RE_DATE=/^\d{4}年\d{1,2}月\d{1,2}日/;
+var RE_SPLIT1=/(?<=[。；])\s*(?=\d+[\.．、]|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|（\d+）)/;
+var RE_SPLIT2=/(?<!\d)(?=\d+[\.．、](?!\d)|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|（\d+）)/;
+var PUNCT=/[。！？，；]/;
 
 function cleanText(s){return s.replace(/》(、|，|,)《/g,'》《').replace(/\"(、|，|,)\"/g,'\"\"').trim();}
 
-// 预处理：清理 AI 导出杂符
+// 预处理
 function preprocessText(text){
-  // 去行首bullet符号、Markdown标记
-  text=text.replace(/^[\\s​‌‍‎‏﻿]*[-–—•·●○▪▸►◆◇✓✔✗✘❖★☆→➤☐☑\\*#]+[\\s​‌‍‎‏﻿]*/,'');
-  // 去残留Markdown加粗/代码标记
-  text=text.replace(/\\*\\*|__/g,'').replace(/`{1,3}/g,'');
+  text=text.replace(/^[\s​‌‍‎‏﻿]*[-–—•·●○▪▸►◆◇✓✔✗✘❖★☆→➤☐☑\*#]+[\s​‌‍‎‏﻿]*/,'');
+  text=text.replace(/\*\*|__/g,'').replace(/`{1,3}/g,'');
   return text.trim();
 }
 
 function splitInlineItems(text){
-  // 拆分"1.xx。2.yy。"→["1.xx。","2.yy。"]
-  if(!/[。；]/.test(text))return[text];
-  var parts=text.split(/(?<=[。；])\\s*(?=\\d+[\\.．、])/);
+  if(!/[。；]/.test(text)){
+    // 无句末标点，尝试宽松拆分
+    var parts2=text.split(RE_SPLIT2);
+    parts2=parts2.filter(function(p){return p.trim().length>1;});
+    if(parts2.length>=2)return parts2.map(function(p){return p.trim();});
+    return[text];
+  }
+  var parts=text.split(RE_SPLIT1);
   parts=parts.filter(function(p){return p.trim();});
-  return parts.length>=2?parts.map(function(p){return p.trim();}):[text];
+  if(parts.length>=2)return parts.map(function(p){return p.trim();});
+  // 句末拆分失败，宽松拆分
+  var parts3=text.split(RE_SPLIT2);
+  parts3=parts3.filter(function(p){return p.trim().length>1;});
+  return parts3.length>=2?parts3.map(function(p){return p.trim();}):[text];
 }
 
+// 层级检测（不再从纯文本创建表格）
 function detectLev(text,tlen,bold,prev,nextLen){
   if(RE_FIG.test(text)&&tlen<=50)return -1;
   if(RE_H5.test(text))return 5;
   if(RE_H4.test(text))return 4;
-  if(RE_H3.test(text)&&tlen<=30)return 3;
-  if(RE_H2.test(text)&&!/[。！？，；]/.test(text))return 2;
-  if(RE_H1.test(text)&&!/[。！？，；]/.test(text))return 1;
-  if(RE_KV.test(text)&&tlen<=50)return -2;
+  if(RE_H3.test(text)&&!PUNCT.test(text))return 3;
+  if(RE_H2.test(text)&&!PUNCT.test(text))return 2;
+  if(RE_H1.test(text)&&!PUNCT.test(text))return 1;
+  // 启发式（排在KV前面）
   if(tlen<=18&&nextLen&&nextLen>40){if(!RE_DATE.test(text)&&!RE_FIG.test(text)){if(prev&&prev>=1)return Math.min(prev+1,5);return 2;}}
   if(tlen<=20&&bold)return 2;
-  if(tlen>18&&tlen<=35&&nextLen&&nextLen>60){if(!RE_DATE.test(text)&&!RE_KV.test(text))return 2;}
+  if(tlen>18&&tlen<=35&&nextLen&&nextLen>60){if(!RE_DATE.test(text)&&!RE_FIG.test(text))return 2;}
   return 0;
 }
 
-function collectKV(paras,start){
-  var kvs=[];var i=start;
-  while(i<paras.length){var m=paras[i].text.match(RE_KV);if(m&&paras[i].len<=50){var idx=paras[i].text.search(/[：:]/);if(idx>0){kvs.push([paras[i].text.slice(0,idx).trim(),paras[i].text.slice(idx+1).trim()]);i++;continue;}}break;}
-  return{kvs:kvs,endIdx:i};
-}
-
-function analyze(paras){
-  var levels=[];
-  for(var i=0;i<paras.length;i++){var p=paras[i];if(p._isTable){levels.push(['table',p._kvs]);continue;}var nextLen=i+1<paras.length?paras[i+1].len:null;var prev=levels.length>0?levels[levels.length-1][0]:null;levels.push([detectLev(p.text,p.len,p.bold,prev,nextLen),cleanText(p.text)]);}
-  var merged=[];var i=0;
-  while(i<levels.length){var l=levels[i][0],t=levels[i][1];if(l===-2){var r=collectKV(paras,i);if(r.kvs.length>=2){merged.push(['table',r.kvs]);i=r.endIdx;continue;}}merged.push([l,t]);i++;}
+// 分析（表格原样保留）
+function analyze(blocks){
+  var pBlocks=[];var pIdxMap=[];
+  for(var i=0;i<blocks.length;i++){if(blocks[i].type==='p'){pIdxMap.push(i);pBlocks.push(blocks[i]);}}
+  var merged=[];
+  var pi=0;
+  for(var i=0;i<blocks.length;i++){
+    var b=blocks[i];
+    if(b.type==='tbl'){
+      merged.push(['table',b.rows]);
+    }else{
+      var nextP=pi+1<pBlocks.length?pBlocks[pi+1]:null;
+      var prevLev=merged.length>0?merged[merged.length-1][0]:null;
+      var lev=detectLev(b.text,b.len,b.bold,prevLev,nextP?nextP.len:null);
+      merged.push([lev,cleanText(b.text),b.bold]);
+      pi++;
+    }
+  }
   return merged;
 }
 
-// docx 生成 (使用 JSZip)
+// docx 生成
 function makeDocumentXml(merged){
   var FH='黑体',FK='楷体_GB2312',FB='仿宋_GB2312',SZ='32',ST='21',LN='560',IND='640';
   var body='';
-  for(var mi=0;mi<merged.length;mi++){var lv=merged[mi][0],item=merged[mi][1];
+  for(var mi=0;mi<merged.length;mi++){
+    var lv=merged[mi][0],item=merged[mi][1];
     if(lv==='table'){
-      body+='<w:tbl><w:tblPr><w:tblW w:w=\"5000\" w:type=\"pct\"/><w:tblBorders><w:top w:val=\"single\" w:sz=\"4\"/><w:left w:val=\"single\" w:sz=\"4\"/><w:bottom w:val=\"single\" w:sz=\"4\"/><w:right w:val=\"single\" w:sz=\"4\"/><w:insideH w:val=\"single\" w:sz=\"4\"/><w:insideV w:val=\"single\" w:sz=\"4\"/></w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w=\"2500\"/><w:gridCol w:w=\"2500\"/></w:tblGrid>';
-      for(var ti=0;ti<item.length;ti++){var k=item[ti][0],v=item[ti][1];
-        body+='<w:tr><w:tc><w:tcPr><w:shd w:val=\"clear\" w:fill=\"F2F2F2\"/></w:tcPr><w:p><w:pPr><w:spacing w:line=\"360\" w:lineRule=\"exact\" w:before=\"0\" w:after=\"0\"/><w:jc w:val=\"right\"/></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia=\"'+FB+'\" w:ascii=\"'+FB+'\"/><w:sz w:val=\"'+ST+'\"/><w:b/></w:rPr><w:t xml:space=\"preserve\">'+escXml(k)+'</w:t></w:r></w:p></w:tc><w:tc><w:p><w:pPr><w:spacing w:line=\"360\" w:lineRule=\"exact\" w:before=\"0\" w:after=\"0\"/></w:pPr><w:r><w:rPr><w:rFonts w:eastAsia=\"'+FB+'\" w:ascii=\"'+FB+'\"/><w:sz w:val=\"'+ST+'\"/></w:rPr><w:t xml:space=\"preserve\">'+escXml(v)+'</w:t></w:r></w:p></w:tc></w:tr>';
+      var rows=item;
+      if(!rows||rows.length===0)continue;
+      var cols=0;for(var ri=0;ri<rows.length;ri++){if(rows[ri].length>cols)cols=rows[ri].length;}
+      body+='<w:tbl><w:tblPr><w:tblW w:w=\"5000\" w:type=\"pct\"/><w:tblBorders><w:top w:val=\"single\" w:sz=\"4\"/><w:left w:val=\"single\" w:sz=\"4\"/><w:bottom w:val=\"single\" w:sz=\"4\"/><w:right w:val=\"single\" w:sz=\"4\"/><w:insideH w:val=\"single\" w:sz=\"4\"/><w:insideV w:val=\"single\" w:sz=\"4\"/></w:tblBorders></w:tblPr><w:tblGrid>';
+      for(var ci=0;ci<cols;ci++)body+='<w:gridCol w:w=\"'+(Math.floor(9000/cols))+'\"/>';
+      body+='</w:tblGrid>';
+      for(var ri=0;ri<rows.length;ri++){
+        body+='<w:tr>';
+        var row=rows[ri];
+        for(var ci=0;ci<cols;ci++){
+          var val=ci<row.length?row[ci]:'';
+          var isHeader=(ri===0);
+          body+='<w:tc>'+(isHeader?'<w:tcPr><w:shd w:val=\"clear\" w:fill=\"D9D9D9\"/></w:tcPr>':'');
+          body+='<w:p><w:pPr><w:spacing w:line=\"360\" w:lineRule=\"exact\" w:before=\"0\" w:after=\"0\"/>'+(isHeader?'<w:jc w:val=\"center\"/>':'')+'</w:pPr><w:r><w:rPr><w:rFonts w:eastAsia=\"'+FB+'\" w:ascii=\"'+FB+'\"/><w:sz w:val=\"'+ST+'\"'+(isHeader?'/><w:b/>':'/')+'></w:rPr><w:t xml:space=\"preserve\">'+escXml(val)+'</w:t></w:r></w:p></w:tc>';
+        }
+        body+='</w:tr>';
       }
       body+='</w:tbl><w:p><w:pPr><w:spacing w:line=\"'+LN+'\" w:lineRule=\"exact\" w:before=\"0\" w:after=\"0\"/></w:pPr></w:p>';
       continue;
     }
-    var fnt=FB,sz=SZ,bld='',ind=' w:firstLine=\"'+IND+'\"';
-    switch(lv){case 1:fnt=FH;ind='';break;case 2:fnt=FK;ind='';break;case 3:bld='<w:b/>';ind='';break;case 4:bld='<w:b/>';break;case 5:break;case -1:sz=ST;break;}
+    var _,bold=merged[mi][2]||false;
+    var fnt=FB,sz=SZ,bld=bold?'<w:b/>':'',ind=' w:firstLine=\"'+IND+'\"';
+    switch(lv){case 1:fnt=FH;bld='';ind='';break;case 2:fnt=FK;bld='';ind='';break;case 3:bld='<w:b/>';ind='';break;case 4:bld='<w:b/>';break;case 5:break;case -1:sz=ST;break;}
     body+='<w:p><w:pPr><w:spacing w:line=\"'+LN+'\" w:lineRule=\"exact\" w:before=\"0\" w:after=\"0\"/>'+(ind?'<w:ind'+ind+'/>':'')+'</w:pPr><w:r><w:rPr><w:rFonts w:eastAsia=\"'+fnt+'\" w:ascii=\"'+fnt+'\"/><w:sz w:val=\"'+sz+'\"/>'+bld+'</w:rPr><w:t xml:space=\"preserve\">'+escXml(item)+'</w:t></w:r></w:p>';
   }
   return '<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body>'+body+'<w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\"/><w:pgMar w:top=\"2098\" w:bottom=\"1984\" w:left=\"1588\" w:right=\"1474\"/></w:sectPr></w:body></w:document>';
@@ -235,11 +266,20 @@ var cur=null,fname='document';
 function renderSource(merged){
   var el=document.getElementById('sourcePreview');el.innerHTML='';
   for(var i=0;i<merged.length;i++){var l=merged[i][0],item=merged[i][1];
-    var d=document.createElement('div');d.className='para-item '+(BC[l]||'');
-    var tag=document.createElement('span');tag.className='tag '+(TC[l]||'tag-body');tag.textContent=LV[l]||'正文';d.appendChild(tag);
-    if(l==='table'){for(var j=0;j<item.length;j++)d.appendChild(document.createTextNode(item[j][0]+'：'+item[j][1]+'  '));}
-    else d.appendChild(document.createTextNode(item));
-    el.appendChild(d);
+    if(l==='table'){
+      var rows=item;
+      for(var ri=0;ri<rows.length;ri++){
+        var d=document.createElement('div');d.className='para-item b-tbl';
+        var tag=document.createElement('span');tag.className='tag tag-tbl';tag.textContent='表格';d.appendChild(tag);
+        d.appendChild(document.createTextNode(rows[ri].join(' | ')));
+        el.appendChild(d);
+      }
+    }else{
+      var d=document.createElement('div');d.className='para-item '+(BC[l]||'');
+      var tag=document.createElement('span');tag.className='tag '+(TC[l]||'tag-body');tag.textContent=LV[l]||'正文';d.appendChild(tag);
+      d.appendChild(document.createTextNode(item));
+      el.appendChild(d);
+    }
   }
 }
 
@@ -247,8 +287,17 @@ function renderPreview(merged){
   var el=document.getElementById('formatPreview');el.innerHTML='';
   for(var i=0;i<merged.length;i++){var l=merged[i][0],item=merged[i][1];
     if(l==='table'){
+      var rows=item;if(!rows||rows.length===0)continue;
       var d=document.createElement('div');d.className='pv-tbl';
-      for(var j=0;j<item.length;j++){var r=document.createElement('div');r.className='r';var ks=document.createElement('span');ks.className='k';ks.textContent=item[j][0];var vs=document.createElement('span');vs.className='v';vs.textContent=item[j][1];r.appendChild(ks);r.appendChild(vs);d.appendChild(r);}
+      for(var ri=0;ri<rows.length;ri++){
+        var r=document.createElement('div');r.className='r';
+        for(var ci=0;ci<rows[ri].length;ci++){
+          var span=document.createElement('span');
+          span.style.cssText='flex:1;padding:2px 4px;'+(ri===0?'font-weight:bold;':'');
+          span.textContent=rows[ri][ci];r.appendChild(span);
+        }
+        d.appendChild(r);
+      }
       el.appendChild(d);
     }else{var d2=document.createElement('div');d2.className=PV[l]||'pv-body';d2.textContent=item;el.appendChild(d2);}
   }
@@ -257,7 +306,7 @@ function renderPreview(merged){
 function updateToolbar(){
   var tb=document.getElementById('toolbar');
   if(!cur){tb.innerHTML='<span style=\"color:#bbb\">等待上传文件...</span>';return;}
-  var cnt={};for(var i=0;i<cur.length;i++){var k=LV[cur[i][0]]||'?';cnt[k]=(cnt[k]||0)+1;}
+  var cnt={};for(var i=0;i<cur.length;i++){var lv=cur[i][0];var k=LV[lv]||'?';cnt[k]=(cnt[k]||0)+1;}
   var pairs=[];for(var k in cnt)pairs.push(k+'×'+cnt[k]);
   tb.innerHTML='<button class=\"btn btn-outline\" onclick=\"resetAll()\">🔄 重新上传</button><button class=\"btn btn-success\" id=\"btnDownload\" onclick=\"doDownload()\">⬇ 导出格式化文档</button><span class=\"stats\">检测：'+pairs.join(' · ')+'　|　共 '+cur.length+' 个内容块</span>';
 }
@@ -269,15 +318,17 @@ async function processFile(file){
   document.getElementById('formatPreview').innerHTML='<div class=\"empty\"><div class=\"icon\">⏳</div>等待解析完成...</div>';
   document.getElementById('toolbar').innerHTML='<span style=\"color:#bbb\">⏳ 处理中...</span>';
   try{
-    var raw=await extractParagraphs(file);
-    // 预处理：去杂符、拆内联编号
+    var blocks=await extractContent(file);
+    // 预处理（仅对段落块去杂符、拆内联编号，表格原样保留）
     var cleaned=[];
-    for(var ri=0;ri<raw.length;ri++){
-      var t=preprocessText(raw[ri].text);
+    for(var ri=0;ri<blocks.length;ri++){
+      var b=blocks[ri];
+      if(b.type==='tbl'){cleaned.push(b);continue;}
+      var t=preprocessText(b.text);
       if(!t)continue;
       var parts=splitInlineItems(t);
       for(var pi=0;pi<parts.length;pi++){
-        cleaned.push({text:parts[pi],len:parts[pi].length,bold:raw[ri].bold});
+        cleaned.push({type:'p',text:parts[pi],len:parts[pi].length,bold:b.bold});
       }
     }
     if(cleaned.length===0){
@@ -288,7 +339,8 @@ async function processFile(file){
     renderSource(cur);
     renderPreview(cur);
     updateToolbar();
-    showToast('✅ 成功！检测到 '+raw.length+' 个段落 → '+cur.length+' 个内容块');
+    var pCount=0,tCount=0;for(var i=0;i<blocks.length;i++){if(blocks[i].type==='tbl')tCount++;else pCount++;}
+    showToast('✅ 成功！'+pCount+' 段 + '+tCount+' 表 → '+cur.length+' 块');
   }catch(e){
     console.error(e);
     document.getElementById('sourcePreview').innerHTML='<div class=\"err\"><strong>❌ 解析失败</strong><br><br>错误信息：'+e.message+'<br><br>请确认文件为 .docx 格式（Word 2007+）、未损坏、未加密</div>';
