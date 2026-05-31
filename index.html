@@ -224,7 +224,7 @@ function makeDocumentXml(merged){
     }
     var _,bold=merged[mi][2]||false;
     var fnt=FB,sz=SZ,bld=bold?'<w:b/>':'',ind=' w:firstLine=\"'+IND+'\"';
-    switch(lv){case 1:fnt=FH;bld='';ind='';break;case 2:fnt=FK;bld='';ind='';break;case 3:bld='<w:b/>';ind='';break;case 4:bld='<w:b/>';break;case 5:break;case -1:sz=ST;break;}
+    switch(lv){case 1:fnt=FH;bld='';ind='';break;case 2:fnt=FK;bld='';ind='';break;case 3:bld='<w:b/>';break;case 4:bld='<w:b/>';break;case 5:break;case -1:sz=ST;break;}
     body+='<w:p><w:pPr><w:spacing w:line=\"'+LN+'\" w:lineRule=\"exact\" w:before=\"0\" w:after=\"0\"/>'+(ind?'<w:ind'+ind+'/>':'')+'</w:pPr><w:r><w:rPr><w:rFonts w:eastAsia=\"'+fnt+'\" w:ascii=\"'+fnt+'\"/><w:sz w:val=\"'+sz+'\"/>'+bld+'</w:rPr><w:t xml:space=\"preserve\">'+escXml(item)+'</w:t></w:r></w:p>';
   }
   return '<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body>'+body+'<w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\"/><w:pgMar w:top=\"2098\" w:bottom=\"1984\" w:left=\"1588\" w:right=\"1474\"/></w:sectPr></w:body></w:document>';
