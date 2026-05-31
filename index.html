@@ -141,7 +141,6 @@ var RE_H4=/^（\d+）/;
 var RE_H5=/^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]/;
 var RE_FIG=/^图\s*\d+/;
 var RE_DATE=/^\d{4}年\d{1,2}月\d{1,2}日/;
-var RE_SPLIT1=/(?<=[。；])\s*(?=\d+[\.．、]|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|（\d+）)/;
 var RE_SPLIT2=/(?<!\d)(?=\d+[\.．、](?!\d)|[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]|（\d+）)/;
 var PUNCT=/[。！？，；]/;
 
@@ -155,20 +154,9 @@ function preprocessText(text){
 }
 
 function splitInlineItems(text){
-  if(!/[。；]/.test(text)){
-    // 无句末标点，尝试宽松拆分
-    var parts2=text.split(RE_SPLIT2);
-    parts2=parts2.filter(function(p){return p.trim().length>1;});
-    if(parts2.length>=2)return parts2.map(function(p){return p.trim();});
-    return[text];
-  }
-  var parts=text.split(RE_SPLIT1);
-  parts=parts.filter(function(p){return p.trim();});
-  if(parts.length>=2)return parts.map(function(p){return p.trim();});
-  // 句末拆分失败，宽松拆分
-  var parts3=text.split(RE_SPLIT2);
-  parts3=parts3.filter(function(p){return p.trim().length>1;});
-  return parts3.length>=2?parts3.map(function(p){return p.trim();}):[text];
+  var parts=text.split(RE_SPLIT2);
+  parts=parts.filter(function(p){return p.trim().length>1;});
+  return parts.length>=2?parts.map(function(p){return p.trim();}):[text];
 }
 
 // 层级检测（不再从纯文本创建表格）
@@ -176,7 +164,7 @@ function detectLev(text,tlen,bold,prev,nextLen){
   if(RE_FIG.test(text)&&tlen<=50)return -1;
   if(RE_H5.test(text))return 5;
   if(RE_H4.test(text))return 4;
-  if(RE_H3.test(text)&&!PUNCT.test(text))return 3;
+  if(RE_H3.test(text))return 3;
   if(RE_H2.test(text)&&!PUNCT.test(text))return 2;
   if(RE_H1.test(text)&&!PUNCT.test(text))return 1;
   // 启发式（排在KV前面）
