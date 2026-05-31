@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>公文格式自动排版 — Gov Doc Formatter</title>
+
+<!-- CDN -->
+<script src="https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js"></script>
+<script src="https://unpkg.com/docx@8.5.0/build/index.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: "Microsoft YaHei","微软雅黑",sans-serif;
+  background: #f0f2f5; color: #333; min-height: 100vh;
+}
+
+/* ── 顶部 ── */
+.header {
+  background: linear-gradient(135deg, #1a3a5c 0%, #2a5a8c 100%);
+  color: #fff; padding: 18px 32px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.header h1 { font-size: 20px; font-weight: 500; letter-spacing: 1px; }
+.header .badge { font-size:12px; background:rgba(255,255,255,0.2); padding:4px 12px; border-radius:12px; }
+
+/* ── 主布局 ── */
+.container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+.columns { display: flex; gap: 20px; min-height: 70vh; }
+.col { background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow: hidden; }
+
+/* 左栏：上传+原文 */
+.col-left { flex: 1; display: flex; flex-direction: column; }
+/* 右栏：格式化预览 */
+.col-right { flex: 1; display: flex; flex-direction: column; }
+
+.col-header {
+  padding: 14px 20px; font-size: 14px; font-weight: 600;
+  border-bottom: 1px solid #e8e8e8; background: #fafafa;
+  display: flex; align-items: center; gap: 8px;
+}
+.col-header .dot { width:8px; height:8px; border-radius:50%; }
+.dot-blue { background:#1890ff; }
+.dot-green { background:#52c41a; }
+
+.col-body { flex:1; overflow-y:auto; padding: 20px; font-size: 14px; line-height: 1.8; }
+
+/* ── 上传区 ── */
+.drop-zone {
+  border: 2px dashed #d9d9d9; border-radius: 8px;
+  padding: 40px 20px; text-align: center; cursor: pointer;
+  transition: all 0.3s; margin: 20px; background: #fafafa;
+}
+.drop-zone:hover, .drop-zone.dragover { border-color:#1890ff; background:#e6f7ff; }
+.drop-zone .icon { font-size:40px; margin-bottom:10px; }
+.drop-zone .hint { font-size:13px; color:#999; margin-top:6px; }
+.drop-zone input { display:none; }
+
+/* ── 预览原文 ── */
+.para-item {
+  padding: 6px 10px; margin: 2px 0; border-radius: 4px;
+  border-left: 3px solid transparent; cursor: default;
+  transition: background 0.15s; position: relative;
+}
+.para-item:hover { background: #f5f5f5; }
+.para-item .tag {
+  display: inline-block; font-size: 10px; padding: 1px 6px;
+  border-radius: 3px; margin-right: 6px; font-weight: 600;
+  vertical-align: middle; min-width: 36px; text-align: center;
+}
+.tag-h1 { background:#1a3a5c; color:#fff; }
+.tag-h2 { background:#2a5a8c; color:#fff; }
+.tag-h3 { background:#1890ff; color:#fff; }
+.tag-h4 { background:#722ed1; color:#fff; }
+.tag-h5 { background:#eb2f96; color:#fff; }
+.tag-body { background:#f0f0f0; color:#666; }
+.tag-fig { background:#faad14; color:#fff; }
+.tag-tbl { background:#52c41a; color:#fff; }
+
+.border-h1 { border-left-color: #1a3a5c; }
+.border-h2 { border-left-color: #2a5a8c; }
+.border-h3 { border-left-color: #1890ff; }
+.border-h4 { border-left-color: #722ed1; }
+.border-h5 { border-left-color: #eb2f96; }
+.border-fig { border-left-color: #faad14; }
+.border-tbl { border-left-color: #52c41a; }
+
+/* ── 右栏预览 ── */
+.preview-h1 {
+  font-family: "SimHei","黑体",sans-serif; font-size: 16pt;
+  font-weight: bold; margin: 8px 0 4px; line-height: 2;
+}
+.preview-h2 {
+  font-family: "KaiTi","楷体",serif; font-size: 16pt;
+  margin: 6px 0 3px; line-height: 2;
+}
+.preview-h3 {
+  font-family: "FangSong","仿宋",serif; font-size: 16pt;
+  font-weight: bold; margin: 4px 0 2px; line-height: 2;
+}
+.preview-h4 {
+  font-family: "FangSong","仿宋",serif; font-size: 16pt;
+  font-weight: bold; text-indent: 2em; margin: 2px 0; line-height: 2;
+}
+.preview-h5 {
+  font-family: "FangSong","仿宋",serif; font-size: 16pt;
+  text-indent: 2em; margin: 2px 0; line-height: 2;
+}
+.preview-body {
+  font-family: "FangSong","仿宋",serif; font-size: 16pt;
+  text-indent: 2em; margin: 2px 0; line-height: 2;
+}
+.preview-fig {
+  font-family: "FangSong","仿宋",serif; font-size: 10.5pt;
+  text-indent: 2em; color: #888; margin: 2px 0;
+}
+.preview-tbl {
+  margin: 8px 0; padding: 8px 12px; background: #fafafa;
+  border: 1px solid #e0e0e0; border-radius: 4px;
+  font-family: "FangSong","仿宋",serif; font-size: 10.5pt;
+}
+.preview-tbl .tbl-row { display: flex; padding: 3px 0; border-bottom: 1px dotted #eee; }
+.preview-tbl .tbl-key { width: 100px; color: #666; text-align: right; padding-right: 12px; flex-shrink:0; }
+.preview-tbl .tbl-val { flex:1; }
+
+.empty-state { text-align:center; color:#bbb; padding:60px 20px; }
+.empty-state .icon { font-size:48px; margin-bottom:12px; }
+
+/* ── 底部操作栏 ── */
+.toolbar {
+  display: flex; gap: 12px; align-items: center; padding: 16px 20px;
+  border-top: 1px solid #e8e8e8; background: #fafafa;
+}
+.btn {
+  padding: 10px 24px; border: none; border-radius: 6px;
+  font-size: 14px; cursor: pointer; font-weight: 500;
+  display: flex; align-items: center; gap: 6px;
+  transition: all 0.2s;
+}
+.btn-primary { background: #1890ff; color: #fff; }
+.btn-primary:hover { background: #40a9ff; }
+.btn-primary:disabled { background: #d9d9d9; cursor: not-allowed; }
+.btn-success { background: #52c41a; color: #fff; }
+.btn-success:hover { background: #73d13d; }
+.btn-success:disabled { background: #d9d9d9; cursor: not-allowed; }
+.btn-outline { background: #fff; color: #666; border: 1px solid #d9d9d9; }
+.btn-outline:hover { border-color: #1890ff; color: #1890ff; }
+
+.stats { font-size: 13px; color: #888; margin-left: auto; }
+
+/* ── toast ── */
+.toast {
+  position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+  background: #333; color: #fff; padding: 10px 24px; border-radius: 6px;
+  font-size: 14px; z-index: 999; opacity: 0; transition: opacity 0.3s;
+  pointer-events: none;
+}
+.toast.show { opacity: 1; }
+
+/* ── 响应式 ── */
+@media (max-width: 900px) {
+  .columns { flex-direction: column; }
+  .col { min-height: 40vh; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>📄 公文格式自动排版</h1>
+  <span class="badge">党政机关公文格式 GB/T 9704</span>
+</div>
+
+<div class="container">
+  <div class="columns">
+
+    <!-- ===== 左栏：上传 + 原文 + 检测标记 ===== -->
+    <div class="col col-left">
+      <div class="col-header"><span class="dot dot-blue"></span> 源文档 — 层级检测</div>
+      <div class="drop-zone" id="dropZone">
+        <div class="icon">📁</div>
+        <div>点击或拖拽上传 <strong>.docx</strong> 文件</div>
+        <div class="hint">支持 Word 2007+ 格式 · 文件仅在本机处理，不上传服务器</div>
+        <input type="file" id="fileInput" accept=".docx">
+      </div>
+      <div class="col-body" id="sourcePreview">
+        <div class="empty-state">
+          <div class="icon">📂</div>
+          <div>上传文件后，这里展示层级检测结果</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 右栏：格式化预览 ===== -->
+    <div class="col col-right">
+      <div class="col-header"><span class="dot dot-green"></span> 格式化预览 — 公文样式</div>
+      <div class="col-body" id="formatPreview">
+        <div class="empty-state">
+          <div class="icon">👁</div>
+          <div>上传文件后，这里展示排版效果</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ===== 底部工具栏 ===== -->
+  <div class="toolbar" id="toolbar">
+    <span style="color:#bbb;">等待上传文件...</span>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ═══════════════════════════════════════════
+//  检测算法（从 formatter.py 翻译）
+// ═══════════════════════════════════════════
+
+const RE_H1 = /^[一二三四五六七八九十]+[、．.]/;
+const RE_H2 = /^（[一二三四五六七八九十]+）/;
+const RE_H3 = /^\d+[\.．、]\s*\S/;
+const RE_H4 = /^（\d+）/;
+const RE_H5 = /^[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]/;
+const RE_FIG = /^图\s*\d+/;
+const RE_DATE = /^\d{4}年\d{1,2}月\d{1,2}日/;
+const RE_KV = /^[^：:]{1,20}[：:].{1,40}$/;
+
+function cleanText(text) {
+  text = text.replace(/》(、|，|,)《/g, '》《');
+  text = text.replace(/"(、|，|,)"/g, '""');
+  return text.trim();
+}
+
+function detectLevel(text, tlen, hasBold, prevLevel, nextLen) {
+  // 图注
+  if (RE_FIG.test(text) && tlen <= 50) return -1;
+  // 键值对
+  if (RE_KV.test(text) && tlen <= 50) return -2;
+  // 五级
+  if (RE_H5.test(text)) return 5;
+  // 四级
+  if (RE_H4.test(text)) return 4;
+  // 三级
+  if (RE_H3.test(text) && tlen <= 30) return 3;
+  // 二级
+  if (RE_H2.test(text)) return 2;
+  // 一级
+  if (RE_H1.test(text)) return 1;
+
+  // ── 启发式 ──
+  // 短行 + 下一段明显是正文
+  if (tlen <= 18 && nextLen && nextLen > 40) {
+    if (!RE_DATE.test(text) && !RE_FIG.test(text)) {
+      if (prevLevel && prevLevel >= 1) return Math.min(prevLevel + 1, 5);
+      return 2;
+    }
+  }
+  // 短行 + 加粗
+  if (tlen <= 20 && hasBold) return 2;
+  // 中长行 + 下一段是非常长的正文
+  if (tlen > 18 && tlen <= 35 && nextLen && nextLen > 60) {
+    if (!RE_DATE.test(text) && !RE_KV.test(text)) return 2;
+  }
+  // 默认正文
+  return 0;
+}
+
+function collectKeyValues(paras, startIdx) {
+  const kvs = [];
+  let i = startIdx;
+  while (i < paras.length) {
+    const m = paras[i].text.match(RE_KV);
+    if (m && paras[i].len <= 50) {
+      const idx = paras[i].text.search(/[：:]/);
+      if (idx > 0) {
+        kvs.push([paras[i].text.slice(0, idx).trim(), paras[i].text.slice(idx + 1).trim()]);
+        i++;
+        continue;
+      }
+    }
+    break;
+  }
+  return { kvs, endIdx: i };
+}
+
+function analyzeParagraphs(rawParas) {
+  // 第一遍：检测
+  const levels = [];
+  for (let i = 0; i < rawParas.length; i++) {
+    const p = rawParas[i];
+    const nextLen = i + 1 < rawParas.length ? rawParas[i + 1].len : null;
+    const prevLev = levels.length > 0 ? levels[levels.length - 1][0] : null;
+    const lev = detectLevel(p.text, p.len, p.bold, prevLev, nextLen);
+    levels.push([lev, cleanText(p.text)]);
+  }
+
+  // 第二遍：合并相邻键值对
+  const merged = [];
+  let i = 0;
+  while (i < levels.length) {
+    const [lev, text] = levels[i];
+    if (lev === -2) {
+      const { kvs, endIdx } = collectKeyValues(rawParas, i);
+      if (kvs.length >= 2) {
+        merged.push(['table', kvs]);
+        i = endIdx;
+        continue;
+      }
+    }
+    merged.push([lev, text]);
+    i++;
+  }
+  return merged;
+}
+
+// ═══════════════════════════════════════════
+//  mammoth.js 提取段落
+// ═══════════════════════════════════════════
+
+async function extractParagraphs(arrayBuffer) {
+  // 用 mammoth 转 HTML，从中提取段落信息
+  const result = await mammoth.convertToHtml({ arrayBuffer });
+  const html = result.value;
+
+  // 解析 HTML
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  const body = doc.body;
+
+  const rawParas = [];
+  // 遍历所有块级元素
+  function walk(node) {
+    for (const child of node.childNodes) {
+      if (child.nodeType === 1) { // element
+        const tag = child.tagName.toLowerCase();
+        if (tag === 'p' || tag === 'h1' || tag === 'h2' || tag === 'h3' ||
+            tag === 'h4' || tag === 'h5' || tag === 'h6' || tag === 'li') {
+          const text = (child.textContent || '').trim();
+          if (text) {
+            const hasBold = !!child.querySelector('strong, b');
+            rawParas.push({ text, len: text.length, bold: hasBold, tag });
+          }
+        }
+        // 递归处理子元素（表格内的 p 等）
+        if (tag !== 'table') {
+          walk(child);
+        }
+      }
+    }
+  }
+  walk(body);
+
+  // 如果没有提取到任何内容，回退到原始文本模式
+  if (rawParas.length === 0) {
+    const plainResult = await mammoth.extractRawText({ arrayBuffer });
+    const lines = plainResult.value.split(/\n+/);
+    for (const line of lines) {
+      const text = line.trim();
+      if (text && text.length > 0) {
+        rawParas.push({ text, len: text.length, bold: false, tag: 'p' });
+      }
+    }
+  }
+
+  return rawParas;
+}
+
+// ═══════════════════════════════════════════
+//  UI 渲染
+// ═══════════════════════════════════════════
+
+const LEVEL_LABELS = {
+  1: '一级', 2: '二级', 3: '三级', 4: '四级', 5: '五级',
+  0: '正文', '-1': '图注', 'table': '表格'
+};
+const TAG_CLASSES = {
+  1: 'tag-h1', 2: 'tag-h2', 3: 'tag-h3', 4: 'tag-h4', 5: 'tag-h5',
+  0: 'tag-body', '-1': 'tag-fig', 'table': 'tag-tbl'
+};
+const BORDER_CLASSES = {
+  1: 'border-h1', 2: 'border-h2', 3: 'border-h3', 4: 'border-h4', 5: 'border-h5',
+  '-1': 'border-fig', 'table': 'border-tbl'
+};
+
+function renderSourcePreview(merged) {
+  const el = document.getElementById('sourcePreview');
+  el.innerHTML = '';
+
+  for (const [lev, item] of merged) {
+    const div = document.createElement('div');
+    div.className = 'para-item ' + (BORDER_CLASSES[lev] || '');
+
+    const tag = document.createElement('span');
+    tag.className = 'tag ' + (TAG_CLASSES[lev] || 'tag-body');
+    tag.textContent = LEVEL_LABELS[lev] || '正文';
+    div.appendChild(tag);
+
+    if (lev === 'table') {
+      for (const [k, v] of item) {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:inline;';
+        row.innerHTML = '<b>' + escapeHtml(k) + '</b>：' + escapeHtml(v) + ' &nbsp;';
+        div.appendChild(row);
+      }
+    } else {
+      div.appendChild(document.createTextNode(item));
+    }
+    el.appendChild(div);
+  }
+}
+
+function renderFormatPreview(merged) {
+  const el = document.getElementById('formatPreview');
+  el.innerHTML = '';
+
+  for (const [lev, item] of merged) {
+    if (lev === 'table') {
+      const div = document.createElement('div');
+      div.className = 'preview-tbl';
+      for (const [k, v] of item) {
+        const row = document.createElement('div');
+        row.className = 'tbl-row';
+        const keySpan = document.createElement('span');
+        keySpan.className = 'tbl-key';
+        keySpan.textContent = k;
+        const valSpan = document.createElement('span');
+        valSpan.className = 'tbl-val';
+        valSpan.textContent = v;
+        row.appendChild(keySpan);
+        row.appendChild(valSpan);
+        div.appendChild(row);
+      }
+      el.appendChild(div);
+    } else {
+      const cssMap = {
+        1: 'preview-h1', 2: 'preview-h2', 3: 'preview-h3',
+        4: 'preview-h4', 5: 'preview-h5', '-1': 'preview-fig'
+      };
+      const cls = cssMap[lev] || 'preview-body';
+      const div = document.createElement('div');
+      div.className = cls;
+      div.textContent = item;
+      el.appendChild(div);
+    }
+  }
+}
+
+function escapeHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+// ═══════════════════════════════════════════
+//  docx 生成与导出
+// ═══════════════════════════════════════════
+
+function buildDocx(merged) {
+  const FONT_H1 = '黑体';
+  const FONT_H2 = '楷体_GB2312';
+  const FONT_BODY = '仿宋_GB2312';
+  const FONT_TITLE = '方正小标宋-GBK';
+  const SIZE_BODY = 32;   // 16pt = 32 half-points
+  const SIZE_TABLE = 21;  // 10.5pt = 21 half-points
+  const SIZE_TITLE = 44;  // 22pt = 44 half-points
+  const INDENT_BODY = 640; // 2 chars at 16pt ≈ 640 twips (32pt in twips)
+  const LINE_SPACING = 560; // 28pt * 20 = 560 twips
+
+  // 构建段落数组
+  const children = [];
+
+  for (const [lev, item] of merged) {
+    if (lev === 'table') {
+      // 键值对表格
+      const rows = [];
+      for (const [k, v] of item) {
+        rows.push(new docx.TableRow({
+          children: [
+            new docx.TableCell({
+              children: [new docx.Paragraph({
+                alignment: docx.AlignmentType.RIGHT,
+                spacing: { line: 360, lineRule: 'exact' },
+                children: [new docx.TextRun({ text: k, font: FONT_BODY, size: SIZE_TABLE, bold: true })]
+              })],
+              shading: { fill: 'F2F2F2' },
+              width: { size: 2500, type: docx.WidthType.DXA }
+            }),
+            new docx.TableCell({
+              children: [new docx.Paragraph({
+                spacing: { line: 360, lineRule: 'exact' },
+                children: [new docx.TextRun({ text: v, font: FONT_BODY, size: SIZE_TABLE })]
+              })]
+            })
+          ]
+        }));
+      }
+      children.push(new docx.Table({
+        rows,
+        width: { size: 100, type: docx.WidthType.PERCENTAGE }
+      }));
+      // 表后空段
+      children.push(new docx.Paragraph({ spacing:{line:LINE_SPACING,lineRule:'exact'}, children:[] }));
+      continue;
+    }
+
+    let fontName = FONT_BODY;
+    let fontSize = SIZE_BODY;
+    let bold = false;
+    let indent = INDENT_BODY;
+    let align = docx.AlignmentType.LEFT;
+
+    switch (lev) {
+      case 1: fontName = FONT_H1; indent = 0; break;
+      case 2: fontName = FONT_H2; indent = 0; break;
+      case 3: bold = true; indent = 0; break;
+      case 4: bold = true; break;
+      case 5: break;
+      case -1: fontSize = SIZE_TABLE; break;
+      default: break;
+    }
+
+    children.push(new docx.Paragraph({
+      alignment: align,
+      spacing: { line: LINE_SPACING, lineRule: 'exact', before: 0, after: 0 },
+      indent: indent ? { firstLine: indent } : undefined,
+      children: [new docx.TextRun({
+        text: item,
+        font: { name: fontName, eastAsia: fontName },
+        size: fontSize,
+        bold
+      })]
+    }));
+  }
+
+  const doc = new docx.Document({
+    styles: {
+      default: {
+        document: {
+          run: {
+            font: { name: FONT_BODY, eastAsia: FONT_BODY },
+            size: SIZE_BODY
+          },
+          paragraph: {
+            spacing: { line: LINE_SPACING, lineRule: 'exact' }
+          }
+        }
+      }
+    },
+    compatibility: {
+      overflowPunct: false,
+      topLinePunct: false
+    },
+    sections: [{
+      properties: {
+        page: {
+          margin: {
+            top: 1332000,    // 3.7cm
+            bottom: 1260000, // 3.5cm
+            left: 1008000,   // 2.8cm
+            right: 936000    // 2.6cm
+          },
+          size: {
+            width: 1190000,  // A4 width in twips
+            height: 1684000  // A4 height in twips
+          }
+        }
+      },
+      children
+    }]
+  });
+
+  return docx.Packer.toBlob(doc);
+}
+
+// ═══════════════════════════════════════════
+//  事件处理
+// ═══════════════════════════════════════════
+
+let currentMerged = null;
+let currentFileName = 'document';
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+function updateToolbar() {
+  const tb = document.getElementById('toolbar');
+  if (!currentMerged) {
+    tb.innerHTML = '<span style="color:#bbb;">等待上传文件...</span>';
+    return;
+  }
+  let counts = {};
+  for (const [lev] of currentMerged) {
+    const k = LEVEL_LABELS[lev] || '?';
+    counts[k] = (counts[k] || 0) + 1;
+  }
+  const statStr = Object.entries(counts).map(([k,v]) => `${k}×${v}`).join(' · ');
+
+  tb.innerHTML = `
+    <button class="btn btn-outline" onclick="resetAll()">🔄 重新上传</button>
+    <button class="btn btn-success" id="btnDownload" onclick="doDownload()">⬇ 导出格式化文档</button>
+    <span class="stats">检测：${statStr}　|　共 ${currentMerged.length} 个内容块</span>
+  `;
+}
+
+async function processFile(file) {
+  if (!file.name.endsWith('.docx')) {
+    showToast('⚠ 仅支持 .docx 格式（Word 2007+）');
+    return;
+  }
+  currentFileName = file.name.replace(/\.docx$/i, '');
+
+  try {
+    document.getElementById('sourcePreview').innerHTML =
+      '<div class="empty-state"><div class="icon">⏳</div><div>正在分析文档...</div></div>';
+    document.getElementById('formatPreview').innerHTML =
+      '<div class="empty-state"><div class="icon">⏳</div><div>正在渲染预览...</div></div>';
+
+    const arrayBuffer = await file.arrayBuffer();
+    const rawParas = await extractParagraphs(arrayBuffer);
+
+    if (rawParas.length === 0) {
+      showToast('⚠ 未能从文件中提取到文本内容');
+      return;
+    }
+
+    currentMerged = analyzeParagraphs(rawParas);
+    renderSourcePreview(currentMerged);
+    renderFormatPreview(currentMerged);
+    updateToolbar();
+    showToast('✅ 检测完成：' + rawParas.length + ' 个段 → ' + currentMerged.length + ' 个内容块');
+  } catch (e) {
+    console.error(e);
+    showToast('❌ 处理失败：' + e.message);
+  }
+}
+
+async function doDownload() {
+  if (!currentMerged) return;
+  const btn = document.getElementById('btnDownload');
+  btn.disabled = true;
+  btn.textContent = '⏳ 生成中...';
+  try {
+    const blob = await buildDocx(currentMerged);
+    saveAs(blob, currentFileName + '_格式化.docx');
+    showToast('✅ 下载完成！请在 Word 中打开检查');
+  } catch (e) {
+    console.error(e);
+    showToast('❌ 生成失败：' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⬇ 导出格式化文档';
+  }
+}
+
+function resetAll() {
+  currentMerged = null;
+  currentFileName = 'document';
+  document.getElementById('sourcePreview').innerHTML =
+    '<div class="empty-state"><div class="icon">📂</div><div>上传文件后，这里展示层级检测结果</div></div>';
+  document.getElementById('formatPreview').innerHTML =
+    '<div class="empty-state"><div class="icon">👁</div><div>上传文件后，这里展示排版效果</div></div>';
+  updateToolbar();
+  document.getElementById('fileInput').value = '';
+}
+
+// ── 拖拽上传 ──
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  const file = e.dataTransfer.files[0];
+  if (file) processFile(file);
+});
+fileInput.addEventListener('change', () => {
+  const file = fileInput.files[0];
+  if (file) processFile(file);
+});
+
+// 全局粘贴处理
+document.addEventListener('paste', e => {
+  const file = e.clipboardData?.files?.[0];
+  if (file && file.name.endsWith('.docx')) {
+    e.preventDefault();
+    processFile(file);
+  }
+});
+
+// 初始状态
+updateToolbar();
+</script>
+</body>
+</html>
